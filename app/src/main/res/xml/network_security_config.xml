@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 允许访问用户配置的本地/局域网 LLM 服务（通常为 HTTP） -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- 支持本地自签名 HTTPS 证书 -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
