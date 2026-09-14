@@ -30,11 +30,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +51,6 @@ import com.dafei.voicenotes.data.AppPrefs
 import com.dafei.voicenotes.llm.LlmProfile
 import com.dafei.voicenotes.ui.common.formatDateTime
 import com.dafei.voicenotes.ui.common.showToast
-import kotlinx.coroutines.launch
 
 private enum class SettingsTab(val label: String) {
     Asr("录制"),
@@ -65,9 +64,12 @@ fun SettingsScreen(app: VoiceNotesApp) {
     val context = LocalContext.current
     val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))
     val uiState by vm.uiState.collectAsState()
-    val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableStateOf(SettingsTab.Asr) }
     var showKeepScreenOnWarning by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        vm.toasts.collect { showToast(context, it) }
+    }
 
     Column(
         modifier = Modifier
@@ -107,12 +109,7 @@ fun SettingsScreen(app: VoiceNotesApp) {
                         }
                     },
                     onDownload = { modelId, useMirror ->
-                        scope.launch {
-                            vm.downloadModel(modelId, useMirror)
-                            val state = vm.uiState.value
-                            state.message?.let { showToast(context, it) }
-                            state.error?.let { showToast(context, it) }
-                        }
+                        vm.downloadModel(modelId, useMirror)
                     },
                     onDelete = vm::deleteModel,
                     onSelect = vm::selectModel
@@ -131,13 +128,7 @@ fun SettingsScreen(app: VoiceNotesApp) {
                     onModelChange = vm::updateLlmModel,
                     onSystemPromptChange = vm::updateLlmSystemPrompt,
                     onTestConnection = {
-                        scope.launch {
-                            vm.testLlm().onSuccess {
-                                showToast(context, "连接成功")
-                            }.onFailure {
-                                showToast(context, it.message ?: "连接失败")
-                            }
-                        }
+                        vm.testLlm()
                     },
                     onSave = vm::saveLlmSettings
                 )

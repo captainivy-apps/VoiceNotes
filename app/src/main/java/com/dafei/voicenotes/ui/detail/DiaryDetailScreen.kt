@@ -49,7 +49,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +78,6 @@ import com.dafei.voicenotes.ui.common.waveformWindowSlice
 import com.dafei.voicenotes.ui.common.waveformWindowStartMs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -102,7 +100,6 @@ fun DiaryDetailScreen(
         factory = DiaryDetailViewModel.factory(app, entryId)
     )
     val uiState by vm.uiState.collectAsState()
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         vm.refreshLlmProfiles()
@@ -114,6 +111,16 @@ fun DiaryDetailScreen(
     var audioDurationMs by remember { mutableStateOf(0L) }
     var playbackPositionMs by remember { mutableStateOf(0L) }
     var selectedTab by remember { mutableStateOf(DetailTab.Audio) }
+
+    LaunchedEffect(Unit) {
+        vm.events.collect { event ->
+            when (event) {
+                is DetailEvent.Toast -> showToast(context, event.message)
+                DetailEvent.SwitchToPolished -> selectedTab = DetailTab.Polished
+                DetailEvent.NavigateBack -> onBack()
+            }
+        }
+    }
 
     fun stopPlayback(showToastOnStop: Boolean = false, resetPosition: Boolean = true) {
         val wasPlaying = isPlaying
@@ -370,23 +377,11 @@ fun DiaryDetailScreen(
                     onDelete = { confirmAction = ConfirmAction.DeleteAudio },
                     onDownload = {
                         showToast(context, "正在下载录音…")
-                        scope.launch {
-                            vm.exportAudio().onSuccess {
-                                showToast(context, "已保存到 Download/$it")
-                            }.onFailure { showToast(context, it.message ?: "下载录音失败") }
-                        }
+                        vm.exportAudio()
                     },
                     onRunAsr = {
-                        scope.launch {
-                            showToast(context, "正在识别语音…")
-                            vm.runAsr()
-                            val after = vm.uiState.value
-                            if (after.error != null) {
-                                showToast(context, after.error)
-                            } else {
-                                showToast(context, "识别完成")
-                            }
-                        }
+                        showToast(context, "正在识别语音…")
+                        vm.runAsr()
                     }
                 )
 
@@ -406,11 +401,7 @@ fun DiaryDetailScreen(
                     onDelete = { confirmAction = ConfirmAction.DeleteTranscript },
                     onDownload = {
                         showToast(context, "正在下载识别稿…")
-                        scope.launch {
-                            vm.exportTranscript().onSuccess {
-                                showToast(context, "已保存到 Download/$it")
-                            }.onFailure { showToast(context, it.message ?: "下载识别稿失败") }
-                        }
+                        vm.exportTranscript()
                     },
                     onCopy = {
                         showToast(context, "正在复制识别稿…")
@@ -418,24 +409,11 @@ fun DiaryDetailScreen(
                         showToast(context, "识别稿已复制")
                     },
                     onSaveAsPolished = {
-                        scope.launch {
-                            showToast(context, "正在当作润色稿…")
-                            vm.copyTranscriptToDiary()
-                            showToast(context, "已当作润色稿")
-                            selectedTab = DetailTab.Polished
-                        }
+                        showToast(context, "正在当作润色稿…")
+                        vm.copyTranscriptToDiary()
                     },
                     onRunLlm = {
-                        scope.launch {
-                            vm.runLlm()
-                            val after = vm.uiState.value
-                            if (after.error != null) {
-                                showToast(context, after.error)
-                            } else if (after.diaryText.isNotBlank()) {
-                                showToast(context, "润色完成")
-                                selectedTab = DetailTab.Polished
-                            }
-                        }
+                        vm.runLlm()
                     }
                 )
 
@@ -446,11 +424,7 @@ fun DiaryDetailScreen(
                     onDelete = { confirmAction = ConfirmAction.DeleteDiaryText },
                     onDownload = {
                         showToast(context, "正在下载润色稿…")
-                        scope.launch {
-                            vm.exportDiaryText().onSuccess {
-                                showToast(context, "已保存到 Download/$it")
-                            }.onFailure { showToast(context, it.message ?: "下载润色稿失败") }
-                        }
+                        vm.exportDiaryText()
                     },
                     onCopy = {
                         showToast(context, "正在复制润色稿…")
@@ -469,28 +443,24 @@ fun DiaryDetailScreen(
             text = { Text(action.message) },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch {
-                        when (action) {
-                            ConfirmAction.DeleteAudio -> {
-                                vm.deleteAudio()
-                                showToast(context, "录音已删除")
-                            }
-                            ConfirmAction.DeleteTranscript -> {
-                                vm.deleteTranscript()
-                                showToast(context, "识别稿已删除")
-                            }
-                            ConfirmAction.DeleteDiaryText -> {
-                                vm.deleteDiaryText()
-                                showToast(context, "润色稿已删除")
-                            }
-                            ConfirmAction.DeleteEntry -> {
-                                vm.deleteEntry()
-                                showToast(context, "记事已删除")
-                                onBack()
-                            }
+                    when (action) {
+                        ConfirmAction.DeleteAudio -> {
+                            vm.deleteAudio()
+                            showToast(context, "录音已删除")
                         }
-                        confirmAction = null
+                        ConfirmAction.DeleteTranscript -> {
+                            vm.deleteTranscript()
+                            showToast(context, "识别稿已删除")
+                        }
+                        ConfirmAction.DeleteDiaryText -> {
+                            vm.deleteDiaryText()
+                            showToast(context, "润色稿已删除")
+                        }
+                        ConfirmAction.DeleteEntry -> {
+                            vm.deleteEntry()
+                        }
                     }
+                    confirmAction = null
                 }) { Text("删除") }
             },
             dismissButton = {

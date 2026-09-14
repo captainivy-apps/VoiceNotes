@@ -2,14 +2,18 @@ package com.dafei.voicenotes.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
 import com.dafei.voicenotes.VoiceNotesApp
 import com.dafei.voicenotes.asr.AsrModelInfo
 import com.dafei.voicenotes.asr.AsrModels
 import com.dafei.voicenotes.data.AppPrefs
 import com.dafei.voicenotes.llm.LlmProfile
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 data class SettingsUiState(
     val models: List<AsrModelInfo> = AsrModels.ALL,
@@ -36,6 +40,8 @@ data class SettingsUiState(
 class SettingsViewModel(private val app: VoiceNotesApp) : ViewModel() {
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState = _uiState.asStateFlow()
+    private val _toasts = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val toasts = _toasts.asSharedFlow()
 
     init {
         refresh()
@@ -90,7 +96,7 @@ class SettingsViewModel(private val app: VoiceNotesApp) : ViewModel() {
         refresh()
     }
 
-    suspend fun downloadModel(modelId: String, useMirror: Boolean = false) {
+    fun downloadModel(modelId: String, useMirror: Boolean = false) {
         val model = AsrModels.find(modelId) ?: return
         val sourceLabel = if (useMirror) "镜像" else ""
         _uiState.update {
@@ -103,27 +109,32 @@ class SettingsViewModel(private val app: VoiceNotesApp) : ViewModel() {
                 }
             )
         }
-        app.modelDownloader.download(model, useMirror) { progress ->
-            _uiState.update { state ->
-                state.copy(downloadProgress = state.downloadProgress + (modelId to progress))
-            }
-        }.onSuccess {
-            _uiState.update { state ->
-                state.copy(
-                    downloadProgress = state.downloadProgress - modelId,
-                    message = "${model.displayName} 下载完成"
-                )
-            }
-            if (AsrModels.find(AppPrefs.getSelectedAsrModel(app))?.let { !app.modelDownloader.isDownloaded(it) } != false) {
-                AppPrefs.setSelectedAsrModel(app, modelId)
-            }
-            refresh()
-        }.onFailure { e ->
-            _uiState.update {
-                it.copy(
-                    downloadProgress = it.downloadProgress - modelId,
-                    error = downloadFailureMessage(e)
-                )
+        viewModelScope.launch {
+            app.modelDownloader.download(model, useMirror) { progress ->
+                _uiState.update { state ->
+                    state.copy(downloadProgress = state.downloadProgress + (modelId to progress))
+                }
+            }.onSuccess {
+                _uiState.update { state ->
+                    state.copy(
+                        downloadProgress = state.downloadProgress - modelId,
+                        message = "${model.displayName} 下载完成"
+                    )
+                }
+                if (AsrModels.find(AppPrefs.getSelectedAsrModel(app))?.let { !app.modelDownloader.isDownloaded(it) } != false) {
+                    AppPrefs.setSelectedAsrModel(app, modelId)
+                }
+                refresh()
+                _toasts.emit("${model.displayName} 下载完成")
+            }.onFailure { e ->
+                val message = downloadFailureMessage(e)
+                _uiState.update {
+                    it.copy(
+                        downloadProgress = it.downloadProgress - modelId,
+                        error = message
+                    )
+                }
+                _toasts.emit(message)
             }
         }
     }
@@ -251,9 +262,13 @@ class SettingsViewModel(private val app: VoiceNotesApp) : ViewModel() {
         _uiState.update { it.copy(message = message, error = null) }
     }
 
-    suspend fun testLlm(): Result<String> {
+    fun testLlm() {
         val state = _uiState.value
-        return app.llmClient.testConnection(draftLlmProfile(state).toConfig())
+        viewModelScope.launch {
+            app.llmClient.testConnection(draftLlmProfile(state).toConfig())
+                .onSuccess { _toasts.emit("连接成功") }
+                .onFailure { _toasts.emit(it.message ?: "连接失败") }
+        }
     }
 
     private fun draftLlmProfile(state: SettingsUiState): LlmProfile = LlmProfile(

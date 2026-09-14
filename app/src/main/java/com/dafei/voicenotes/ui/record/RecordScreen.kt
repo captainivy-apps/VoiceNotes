@@ -40,7 +40,6 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,7 +58,6 @@ import com.dafei.voicenotes.ui.common.WaveformView
 import com.dafei.voicenotes.ui.common.formatDuration
 import com.dafei.voicenotes.ui.common.showToast
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 @Composable
 fun RecordScreen(app: VoiceNotesApp, onSaved: (Long) -> Unit) {
@@ -68,7 +66,6 @@ fun RecordScreen(app: VoiceNotesApp, onSaved: (Long) -> Unit) {
     val vm: RecordViewModel = viewModel(factory = RecordViewModel.factory(app))
     val uiState by vm.uiState.collectAsState()
     val session by RecordingService.session.collectAsState()
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         vm.refreshLlmProfiles()
@@ -336,9 +333,7 @@ fun RecordScreen(app: VoiceNotesApp, onSaved: (Long) -> Unit) {
             )
             Button(
                 onClick = {
-                    scope.launch {
-                        vm.saveDirect(onSaved)
-                    }
+                    vm.saveDirect(onSaved)
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -351,9 +346,7 @@ fun RecordScreen(app: VoiceNotesApp, onSaved: (Long) -> Unit) {
             )
             OutlinedButton(
                 onClick = {
-                    scope.launch {
-                        vm.saveWithLlm(onSaved)
-                    }
+                    vm.saveWithLlm(onSaved)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !uiState.isProcessing

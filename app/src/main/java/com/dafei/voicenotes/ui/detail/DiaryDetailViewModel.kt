@@ -15,7 +15,9 @@ import com.dafei.voicenotes.llm.LlmProgressMessages
 import com.dafei.voicenotes.llm.llmConfigFromPrefs
 import com.dafei.voicenotes.ui.common.AsrElapsedTimer
 import com.dafei.voicenotes.ui.common.LlmProgressAnimator
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -42,12 +44,20 @@ data class DiaryDetailUiState(
     val error: String? = null
 )
 
+sealed interface DetailEvent {
+    data class Toast(val message: String) : DetailEvent
+    data object SwitchToPolished : DetailEvent
+    data object NavigateBack : DetailEvent
+}
+
 class DiaryDetailViewModel(
     private val app: VoiceNotesApp,
     private val entryId: Long
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(DiaryDetailUiState(entryId = entryId))
     val uiState = _uiState.asStateFlow()
+    private val _events = MutableSharedFlow<DetailEvent>(extraBufferCapacity = 16)
+    val events = _events.asSharedFlow()
     private val asrTimer = AsrElapsedTimer(viewModelScope)
     private val llmAnimator = LlmProgressAnimator(viewModelScope)
 
@@ -110,7 +120,11 @@ class DiaryDetailViewModel(
         }
     }
 
-    suspend fun runAsr() {
+    private fun emitEvent(event: DetailEvent) {
+        viewModelScope.launch { _events.emit(event) }
+    }
+
+    fun runAsr() {
         val path = _uiState.value.audioPath ?: return
         _uiState.update {
             it.copy(
@@ -125,71 +139,84 @@ class DiaryDetailViewModel(
             _uiState.update { it.copy(asrElapsedMs = elapsed) }
         }
         val modelId = AppPrefs.getSelectedAsrModel(app)
-        app.whisperEngine.transcribe(modelId, File(path)) { progress, phase ->
-            _uiState.update {
-                it.copy(
-                    asrProgress = progress,
-                    statusMessage = AsrProgressMessages.format(phase, progress)
-                )
+        viewModelScope.launch {
+            app.whisperEngine.transcribe(modelId, File(path)) { progress, phase ->
+                _uiState.update {
+                    it.copy(
+                        asrProgress = progress,
+                        statusMessage = AsrProgressMessages.format(phase, progress)
+                    )
+                }
             }
+                .onSuccess { text ->
+                    asrTimer.stop()
+                    app.repository.saveTranscript(entryId, text)
+                    _uiState.update {
+                        it.copy(
+                            isProcessing = false,
+                            asrProgress = null,
+                            asrElapsedMs = 0L,
+                            transcript = text,
+                            statusMessage = ""
+                        )
+                    }
+                    emitEvent(DetailEvent.Toast("识别完成"))
+                }
+                .onFailure { e ->
+                    asrTimer.stop()
+                    val message = when (e) {
+                        is OutOfMemoryError -> "音频过大，内存不足"
+                        else -> e.message ?: "识别失败"
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isProcessing = false,
+                            asrProgress = null,
+                            asrElapsedMs = 0L,
+                            statusMessage = "",
+                            error = message
+                        )
+                    }
+                    emitEvent(DetailEvent.Toast(message))
+                }
         }
-            .onSuccess { text ->
-                asrTimer.stop()
-                app.repository.saveTranscript(entryId, text)
-                _uiState.update {
-                    it.copy(
-                        isProcessing = false,
-                        asrProgress = null,
-                        asrElapsedMs = 0L,
-                        transcript = text,
-                        statusMessage = ""
-                    )
-                }
-            }
-            .onFailure { e ->
-                asrTimer.stop()
-                _uiState.update {
-                    it.copy(
-                        isProcessing = false,
-                        asrProgress = null,
-                        asrElapsedMs = 0L,
-                        statusMessage = "",
-                        error = when (e) {
-                            is OutOfMemoryError -> "音频过大，内存不足"
-                            else -> e.message ?: "识别失败"
-                        }
-                    )
-                }
-            }
     }
 
-    suspend fun copyTranscriptToDiary() {
+    fun copyTranscriptToDiary() {
         val text = _uiState.value.transcript
-        app.repository.saveDiaryText(entryId, text)
-        _uiState.update { it.copy(diaryText = text) }
+        viewModelScope.launch {
+            app.repository.saveDiaryText(entryId, text)
+            _uiState.update { it.copy(diaryText = text) }
+            emitEvent(DetailEvent.SwitchToPolished)
+            emitEvent(DetailEvent.Toast("已当作润色稿"))
+        }
     }
 
-    suspend fun runLlm() {
+    fun runLlm() {
         val transcript = _uiState.value.transcript
         beginLlmProcessing()
         val profileId = _uiState.value.selectedLlmProfileId
-        app.llmClient.polishTranscript(
-            llmConfigFromPrefs(app, profileId),
-            transcript
-        ) { progress, phase ->
-            updateLlmProgress(progress, phase)
-        }
-            .onSuccess { diary ->
-                endLlmProcessing()
-                app.repository.saveDiaryText(entryId, diary)
-                _uiState.update { it.copy(diaryText = diary) }
+        viewModelScope.launch {
+            app.llmClient.polishTranscript(
+                llmConfigFromPrefs(app, profileId),
+                transcript
+            ) { progress, phase ->
+                updateLlmProgress(progress, phase)
             }
-            .onFailure { e ->
-                endLlmProcessing()
-                _uiState.update {
-                    it.copy(error = e.message ?: "LLM 处理失败")
+                .onSuccess { diary ->
+                    endLlmProcessing()
+                    app.repository.saveDiaryText(entryId, diary)
+                    _uiState.update { it.copy(diaryText = diary) }
+                    emitEvent(DetailEvent.SwitchToPolished)
+                    emitEvent(DetailEvent.Toast("润色完成"))
                 }
-            }
+                .onFailure { e ->
+                    endLlmProcessing()
+                    val message = e.message ?: "LLM 处理失败"
+                    _uiState.update { it.copy(error = message) }
+                    emitEvent(DetailEvent.Toast(message))
+                }
+        }
     }
 
     private fun beginLlmProcessing() {
@@ -240,47 +267,79 @@ class DiaryDetailViewModel(
         }
     }
 
-    suspend fun deleteAudio() {
-        app.repository.deleteAudio(entryId)
-        _uiState.update { it.copy(audioPath = null) }
+    fun deleteAudio() {
+        viewModelScope.launch {
+            app.repository.deleteAudio(entryId)
+            _uiState.update { it.copy(audioPath = null) }
+        }
     }
 
-    suspend fun deleteTranscript() {
-        app.repository.deleteTranscript(entryId)
-        _uiState.update { it.copy(transcript = "") }
+    fun deleteTranscript() {
+        viewModelScope.launch {
+            app.repository.deleteTranscript(entryId)
+            _uiState.update { it.copy(transcript = "") }
+        }
     }
 
-    suspend fun deleteDiaryText() {
-        app.repository.deleteDiaryText(entryId)
-        _uiState.update { it.copy(diaryText = "") }
+    fun deleteDiaryText() {
+        viewModelScope.launch {
+            app.repository.deleteDiaryText(entryId)
+            _uiState.update { it.copy(diaryText = "") }
+        }
     }
 
-    suspend fun deleteEntry() {
-        app.repository.deleteEntry(entryId)
+    fun deleteEntry() {
+        viewModelScope.launch {
+            app.repository.deleteEntry(entryId)
+            emitEvent(DetailEvent.NavigateBack)
+            emitEvent(DetailEvent.Toast("记事已删除"))
+        }
     }
 
-    suspend fun exportAudio(): Result<String> {
-        val path = _uiState.value.audioPath ?: return Result.failure(IllegalStateException("无录音"))
-        val file = File(path)
-        val name = ExportFileNames.build(
-            ExportFileNames.TYPE_RECORD,
-            ExportFileNames.audioExtension(file)
-        )
-        return FileExporter.exportAudio(app, file, name)
+    fun exportAudio() {
+        viewModelScope.launch {
+            val path = _uiState.value.audioPath
+            if (path == null) {
+                emitEvent(DetailEvent.Toast("无录音"))
+                return@launch
+            }
+            val file = File(path)
+            val name = ExportFileNames.build(
+                ExportFileNames.TYPE_RECORD,
+                ExportFileNames.audioExtension(file)
+            )
+            FileExporter.exportAudio(app, file, name)
+                .onSuccess { emitEvent(DetailEvent.Toast("已保存到 Download/$it")) }
+                .onFailure { emitEvent(DetailEvent.Toast(it.message ?: "下载录音失败")) }
+        }
     }
 
-    suspend fun exportTranscript(): Result<String> {
-        val text = _uiState.value.transcript
-        if (text.isBlank()) return Result.failure(IllegalStateException("识别稿为空"))
-        val name = ExportFileNames.build(ExportFileNames.TYPE_FIRST, "txt")
-        return FileExporter.exportText(app, text, name)
+    fun exportTranscript() {
+        viewModelScope.launch {
+            val text = _uiState.value.transcript
+            if (text.isBlank()) {
+                emitEvent(DetailEvent.Toast("识别稿为空"))
+                return@launch
+            }
+            val name = ExportFileNames.build(ExportFileNames.TYPE_FIRST, "txt")
+            FileExporter.exportText(app, text, name)
+                .onSuccess { emitEvent(DetailEvent.Toast("已保存到 Download/$it")) }
+                .onFailure { emitEvent(DetailEvent.Toast(it.message ?: "下载识别稿失败")) }
+        }
     }
 
-    suspend fun exportDiaryText(): Result<String> {
-        val text = _uiState.value.diaryText
-        if (text.isBlank()) return Result.failure(IllegalStateException("润色稿为空"))
-        val name = ExportFileNames.build(ExportFileNames.TYPE_FINAL, "txt")
-        return FileExporter.exportText(app, text, name)
+    fun exportDiaryText() {
+        viewModelScope.launch {
+            val text = _uiState.value.diaryText
+            if (text.isBlank()) {
+                emitEvent(DetailEvent.Toast("润色稿为空"))
+                return@launch
+            }
+            val name = ExportFileNames.build(ExportFileNames.TYPE_FINAL, "txt")
+            FileExporter.exportText(app, text, name)
+                .onSuccess { emitEvent(DetailEvent.Toast("已保存到 Download/$it")) }
+                .onFailure { emitEvent(DetailEvent.Toast(it.message ?: "下载润色稿失败")) }
+        }
     }
 
     companion object {

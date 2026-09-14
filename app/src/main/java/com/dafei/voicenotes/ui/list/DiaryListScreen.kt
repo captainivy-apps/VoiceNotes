@@ -24,7 +24,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,13 +34,11 @@ import com.dafei.voicenotes.ui.common.diaryPreview
 import com.dafei.voicenotes.ui.common.diaryTotalSize
 import com.dafei.voicenotes.ui.common.formatDateTime
 import com.dafei.voicenotes.ui.common.formatFileSize
-import kotlinx.coroutines.launch
 
 @Composable
 fun DiaryListScreen(app: VoiceNotesApp, onOpenDetail: (Long) -> Unit) {
     val vm: DiaryListViewModel = viewModel(factory = DiaryListViewModel.factory(app))
     val entries by vm.entries.collectAsState()
-    val scope = rememberCoroutineScope()
     var selectionMode by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<Long>()) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -144,12 +141,10 @@ fun DiaryListScreen(app: VoiceNotesApp, onOpenDetail: (Long) -> Unit) {
             text = { Text("将永久删除选中的 ${selected.size} 篇记事，此操作不可恢复。") },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch {
-                        vm.deleteEntries(selected.toList())
-                        selected = emptySet()
-                        selectionMode = false
-                        showDeleteDialog = false
-                    }
+                    vm.deleteEntries(selected.toList())
+                    selected = emptySet()
+                    selectionMode = false
+                    showDeleteDialog = false
                 }) { Text("删除") }
             },
             dismissButton = {

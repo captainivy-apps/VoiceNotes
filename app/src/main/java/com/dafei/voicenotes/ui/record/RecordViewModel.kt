@@ -236,43 +236,47 @@ class RecordViewModel(
         _uiState.update { it.copy(transcript = text) }
     }
 
-    suspend fun saveDirect(onSaved: (Long) -> Unit) {
+    fun saveDirect(onSaved: (Long) -> Unit) {
         val state = _uiState.value
         val transcript = state.transcript ?: return
         val entryId = state.entryId ?: return
-        app.repository.saveTranscript(entryId, transcript)
-        app.repository.saveDiaryText(entryId, transcript)
-        onSaved(entryId)
-        reset()
+        viewModelScope.launch {
+            app.repository.saveTranscript(entryId, transcript)
+            app.repository.saveDiaryText(entryId, transcript)
+            onSaved(entryId)
+            reset()
+        }
     }
 
-    suspend fun saveWithLlm(onSaved: (Long) -> Unit) {
+    fun saveWithLlm(onSaved: (Long) -> Unit) {
         val state = _uiState.value
         val transcript = state.transcript ?: return
         val entryId = state.entryId ?: return
         beginLlmProcessing()
         val profileId = _uiState.value.selectedLlmProfileId
-        val result = app.llmClient.polishTranscript(
-            llmConfigFromPrefs(app, profileId),
-            transcript
-        ) { progress, phase ->
-            updateLlmProgress(progress, phase)
-        }
-        endLlmProcessing()
-        result.onSuccess { diary ->
-            app.repository.saveTranscript(entryId, transcript)
-            app.repository.saveDiaryText(entryId, diary)
-            onSaved(entryId)
-            reset()
-        }.onFailure { e ->
-            _uiState.update {
-                it.copy(
-                    isProcessing = false,
-                    llmProgress = null,
-                    llmElapsedMs = 0L,
-                    statusMessage = "",
-                    error = e.message ?: "LLM 处理失败"
-                )
+        viewModelScope.launch {
+            val result = app.llmClient.polishTranscript(
+                llmConfigFromPrefs(app, profileId),
+                transcript
+            ) { progress, phase ->
+                updateLlmProgress(progress, phase)
+            }
+            endLlmProcessing()
+            result.onSuccess { diary ->
+                app.repository.saveTranscript(entryId, transcript)
+                app.repository.saveDiaryText(entryId, diary)
+                onSaved(entryId)
+                reset()
+            }.onFailure { e ->
+                _uiState.update {
+                    it.copy(
+                        isProcessing = false,
+                        llmProgress = null,
+                        llmElapsedMs = 0L,
+                        statusMessage = "",
+                        error = e.message ?: "LLM 处理失败"
+                    )
+                }
             }
         }
     }
