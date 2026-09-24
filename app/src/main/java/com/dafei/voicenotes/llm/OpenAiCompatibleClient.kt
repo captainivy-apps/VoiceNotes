@@ -9,6 +9,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 data class LlmConfig(
@@ -21,8 +22,8 @@ data class LlmConfig(
 class OpenAiCompatibleClient {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .writeTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     suspend fun polishTranscript(
@@ -43,6 +44,7 @@ class OpenAiCompatibleClient {
                 val body = JSONObject()
                     .put("model", config.model)
                     .put("temperature", 0.3)
+                    .put("stream", true)
                     .put(
                         "messages",
                         JSONArray()
@@ -61,6 +63,7 @@ class OpenAiCompatibleClient {
                 val requestBuilder = Request.Builder()
                     .url(url)
                     .addHeader("Content-Type", "application/json")
+                    .addHeader("Accept", "text/event-stream")
                     .post(body.toRequestBody("application/json".toMediaType()))
                 if (config.apiKey.isNotBlank()) {
                     requestBuilder.addHeader("Authorization", "Bearer ${config.apiKey}")
@@ -69,20 +72,43 @@ class OpenAiCompatibleClient {
                 report(0.22f, LlmPhase.SENDING)
                 report(0.35f, LlmPhase.WAITING)
                 client.newCall(request).execute().use { response ->
-                    val text = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
+                        val text = response.body?.string().orEmpty()
                         error("LLM 请求失败 (${response.code}): $text")
                     }
-                    report(0.92f, LlmPhase.PARSING)
-                    val json = JSONObject(text)
-                    json.getJSONArray("choices")
-                        .getJSONObject(0)
-                        .getJSONObject("message")
-                        .getString("content")
-                        .trim()
+                    val source = response.body?.source() ?: error("LLM 响应为空")
+                    val content = StringBuilder()
+                    while (true) {
+                        val line = try {
+                            source.readUtf8Line()
+                        } catch (e: IOException) {
+                            error("接收 LLM 响应失败：${e.message ?: "网络中断"}")
+                        } ?: break
+                        if (line.isEmpty() || !line.startsWith("data:")) continue
+                        val payload = line.removePrefix("data:").trim()
+                        if (payload == "[DONE]") break
+                        val delta = runCatching {
+                            JSONObject(payload)
+                                .getJSONArray("choices")
+                                .getJSONObject(0)
+                                .optJSONObject("delta")
+                                ?.optString("content")
+                                .orEmpty()
+                        }.getOrDefault("")
+                        if (delta.isNotEmpty()) {
+                            content.append(delta)
+                            report(streamProgress(content.length), LlmPhase.RECEIVING)
+                        }
+                    }
+                    if (content.isBlank()) error("LLM 未返回内容")
+                    report(0.95f, LlmPhase.PARSING)
+                    content.toString().trim()
                 }
             }
         }
+
+    private fun streamProgress(receivedChars: Int): Float =
+        (0.4f + 0.5f * (1f - 1f / (1f + receivedChars / 400f))).coerceAtMost(0.9f)
 
     suspend fun testConnection(config: LlmConfig): Result<String> =
         polishTranscript(config, "你好，请回复 OK。")

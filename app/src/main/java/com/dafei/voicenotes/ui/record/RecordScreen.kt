@@ -71,6 +71,10 @@ fun RecordScreen(app: VoiceNotesApp, onSaved: (Long) -> Unit) {
         vm.refreshLlmProfiles()
     }
 
+    LaunchedEffect(Unit) {
+        vm.toasts.collect { showToast(context, it) }
+    }
+
     var recordingService by remember { mutableStateOf<RecordingService?>(null) }
     val serviceClient = remember {
         RecordingServiceClient(context.applicationContext) { service ->

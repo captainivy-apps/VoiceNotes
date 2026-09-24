@@ -17,7 +17,9 @@ import com.dafei.voicenotes.llm.llmConfigFromPrefs
 import com.dafei.voicenotes.ui.common.AsrElapsedTimer
 import com.dafei.voicenotes.ui.common.LlmProgressAnimator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -47,6 +49,8 @@ class RecordViewModel(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(RecordUiState())
     val uiState = _uiState.asStateFlow()
+    private val _toasts = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val toasts = _toasts.asSharedFlow()
     private val asrTimer = AsrElapsedTimer(viewModelScope)
     private val llmAnimator = LlmProgressAnimator(viewModelScope)
 
@@ -273,10 +277,10 @@ class RecordViewModel(
                         isProcessing = false,
                         llmProgress = null,
                         llmElapsedMs = 0L,
-                        statusMessage = "",
-                        error = e.message ?: "LLM 处理失败"
+                        statusMessage = ""
                     )
                 }
+                _toasts.emit(e.message ?: "LLM 处理失败")
             }
         }
     }
@@ -308,6 +312,7 @@ class RecordViewModel(
     }
 
     private fun updateLlmProgress(progress: Float, phase: LlmPhase) {
+        if (phase == LlmPhase.RECEIVING) llmAnimator.stop()
         _uiState.update {
             it.copy(
                 llmProgress = progress,

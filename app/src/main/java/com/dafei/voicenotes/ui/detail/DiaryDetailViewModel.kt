@@ -246,6 +246,7 @@ class DiaryDetailViewModel(
     }
 
     private fun updateLlmProgress(progress: Float, phase: LlmPhase) {
+        if (phase == LlmPhase.RECEIVING) llmAnimator.stop()
         _uiState.update {
             it.copy(
                 llmProgress = progress,
